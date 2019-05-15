@@ -1,0 +1,180 @@
+apiVersion: v1
+kind: Template
+objects:
+
+- apiVersion: extensions/v1beta1
+  kind: PodSecurityPolicy
+  metadata:
+    name: kiam-webhook-psp
+  spec:
+    privileged: false
+    allowPrivilegeEscalation: false
+    allowedCapabilities:
+    - '*'
+    volumes:
+    - '*'
+    seLinux:
+      rule: RunAsAny
+    supplementalGroups:
+      rule: RunAsAny
+    runAsUser:
+      rule: RunAsAny
+    fsGroup:
+      rule: RunAsAny
+
+- kind: ClusterRole
+  apiVersion: rbac.authorization.k8s.io/v1
+  metadata:
+    name: kiam-webhook-clusterrole
+  rules:
+  - apiGroups:
+    - extensions
+    resources:
+    - podsecuritypolicies
+    resourceNames:
+    - kiam-webhook-psp
+    verbs:
+    - use
+  - apiGroups:
+    - admissionregistration.k8s.io
+    resources:
+    - mutatingwebhookconfigurations
+    verbs:
+    - get
+    - list
+    - watch
+    - patch
+  - apiGroups:
+    - '*'
+    resources:
+    - configmaps
+    verbs:
+    - '*'
+
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: kiam-webhook
+
+- apiVersion: rbac.authorization.k8s.io/v1beta1
+  kind: ClusterRoleBinding
+  metadata:
+    name: kiam-webhook-rolebinding
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: kiam-webhook-clusterrole
+  subjects:
+  - kind: ServiceAccount
+    name: kiam-webhook
+    namespace: ${VAULT_NAMESPACE}
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: kiam-webhook
+    annotations:
+      service.alpha.openshift.io/serving-cert-secret-name: kiam-webhook-cert
+    labels:
+      app: kiam-webhook
+  spec:
+    ports:
+    - name: kiam-webhook
+      port: 443
+      targetPort: 8080
+    selector:
+      app: kiam-webhook
+
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    labels:
+      app: kiam-webhook
+    name: kiam-webhook
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: kiam-webhook
+    template:
+      metadata:
+        labels:
+          app: kiam-webhook
+      spec:
+        serviceAccountName: kiam-webhook
+        containers:
+        - image: docker.io/openlabred/kiam-webhook:latest
+          name: kiam-webhook
+          env:
+          - name: GIN_MODE
+            value: ${GIN_MODE}
+          - name: LOG_LEVEL
+            value: ${LOG_LEVEL}
+          args:
+          - start
+          ports:
+          - containerPort: 8080
+            protocol: TCP
+          volumeMounts:
+          - name: kiam-webhook-cert
+            mountPath: /var/run/secrets/kubernetes.io/certs
+          - name: kiam-webhook-config
+            mountPath: /var/run/secrets/kubernetes.io/config
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+              scheme: HTTPS
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+              scheme: HTTPS
+        volumes:
+        - name: kiam-webhook-cert
+          secret:
+            secretName: kiam-webhook-cert
+        - name: kiam-webhook-config
+          configMap:
+            name: kiam-webhook-config
+
+- apiVersion: admissionregistration.k8s.io/v1beta1
+  kind: MutatingWebhookConfiguration
+  metadata:
+    name: kiam-webhook
+    labels:
+      app: kiam-webhook
+  webhooks:
+    - name: kiam.vaultproject.io
+      clientConfig:
+        service:
+          name: kiam-webhook
+          namespace: ${VAULT_NAMESPACE}
+          path: "/mutate"
+        caBundle: ${CA_BUNDLE}
+      failurePolicy: Fail
+      rules:
+        - operations: [ "CREATE" ]
+          apiGroups: [""]
+          apiVersions: ["v1"]
+          resources: ["pods"]
+      namespaceSelector:
+        matchLabels:
+          kiam-webhook: enabled
+parameters:
+- name: CA_BUNDLE
+  description: Certificate Authority to validate the services
+  required: true
+- name: KIAM_NAMESPACE
+  description: Kiam Namespace
+  required: true
+  value: "kiam"
+- name: GIN_MODE
+  description: Start up mode of the http server
+  required: true
+  value: "release"
+- name: LOG_LEVEL
+  description: Log level of the application
+  required: true
+  value: "INFO"
+

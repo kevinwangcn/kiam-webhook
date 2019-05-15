@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kiam-webhook-config
+data:
+  kiam-config.yaml: |
+    template: |-
+      annotations:
+        iam.amazonaws.com/role: "arn:aws:iam::038244221789:role/webhook-test"
+
